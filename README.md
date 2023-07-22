@@ -14,7 +14,7 @@
 
 
 #### 在线体验
-体验地址：https://www.boxim.online
+
 
 账号：
 张三/123456
@@ -201,10 +201,6 @@ wsApi.onmessage((cmd,messageInfo) => {
 
 
 #### 联系方式
-QQ: 825657193
-邮箱：825657193@qq.com
-
-有任何问题，欢迎给我留言哦
 
 
 #### 点下star吧
