@@ -14,6 +14,9 @@ import java.util.List;
 @Component
 public class IMServerGroup implements CommandLineRunner  {
 
+    /**
+     * im-server的id
+     */
     public static volatile long serverId = 0;
 
     @Autowired
