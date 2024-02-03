@@ -1,5 +1,4 @@
-参考项目：https://gitee.com/bluexsx/box-im
- 
+
 #### 项目介绍
 1. IM是一个分布式聊天系统，目前完全开源，仅用于学习和交流。
 1. 支持私聊、群聊、离线消息、发送图片、文件、好友在线状态显示等功能。
@@ -16,156 +15,30 @@
 | im-client   | 消息推送sdk|
 | im-common   | 公共包  |
 
+#### 消息推送方案（推方案）
 
-#### 消息推送方案
-![输入图片说明](%E6%88%AA%E5%9B%BE/%E6%B6%88%E6%81%AF%E6%8E%A8%E9%80%81%E9%9B%86%E7%BE%A4%E5%8C%96.jpg)
+![输入图片说明](pic/im_push.png)
 
-- 当消息的发送者和接收者连的不是同一个server时，消息是无法直接推送的，所以我们需要设计出能够支持跨节点推送的方案
-- 利用了redis的list数据实现消息推送，其中key为im:unread:${serverid},每个key的数据可以看做一个queue,每个im-server根据自身的id只消费属于自己的queue
-- redis记录了每个用户的websocket连接的是哪个im-server,当用户发送消息时，im-platform将根据所连接的im-server的id,决定将消息推向哪个queue
+- im通过长连接实现消息推送，单机情况下不同用户的channel是在同一台机器上可以找到并且投递，当场景转换为分布式后，不同的用户channel可能是不同的server在维护，我们需要考虑如何将消息跨server进行投递
+- 利用了redis的list数据实现消息推送，其中key为im:unread:${serverid},每个key的数据可以看做一个messageQueue,每个server根据自身的serverId只消费属于自己的queue
+- 同时使用一个中心化存储记录了每个用户的websocket连接的serverId,当用户发送消息时，platform将根据receId所连接的server的id,决定将消息推向哪个queue
+- 每个server会维护本地的channel，收到messageQueue中的消息后找到对应的Queue进行投递
 
+#### 热点群聊优化方案（推拉结合）
 
-#### 本地快速部署
-1.安装运行环境
-- 安装node:v14.16.0
-- 安装jdk:1.8
-- 安装maven:3.6.3
-- 安装mysql:5.7,密码分别为root/root,运行sql脚本(脚本在im-platfrom的resources/db目录)
-- 安装redis:4.0
-- 安装minio，命令端口使用9001，并创建一个名为"box-im"的bucket，并设置访问权限为公开
+![输入图片说明](pic/im_pull.png)
+- 在客户端会维护热点群聊的已读offset，用户发送热点群聊消息给server
 
-2.启动后端服务
-```
-mvn clean package
-java -jar ./im-platform/target/im-platform.jar
-java -jar ./im-server/target/im-server.jar
-```
+- server统一将消息通过MQ与TS服务进行解耦，TS服务负责将消息进行入库，同时对比用户存在redis中的已读消息的存根是否有必要将message投递到receId对应的messageQueue
 
-3.启动前端ui
-```
-cd im-ui
-npm install
-npm run serve
-```
+- 若投递到messageQueue后，server消费后投递给client无状态的可以拉取请求
 
-4.访问localhost:8080
-#### 快速接入
-消息推送的请求代码已经封装在im-client包中，对于需要接入im-server的小伙伴，可以按照下面的教程快速的将IM功能集成到自己的项目中。
+- client收到请求后进行批量拉取，拉取是需要从DB中拉取，防止DB压力过大，用存根offset与group最新消息进行判断是否有必要拉取。
 
-注意服务器端和网页端都需要接入，服务器端发送消息，网页端接收消息。
+- 拉取操作务必使用异步，可以使用MQ，方便可以使用业务线程，防止单个拉取动作过慢导致work线程阻塞进而影响用户的心跳检测。
 
-4.1 服务器端接入
+  
 
-引入pom文件
-```
-<dependency>
-    <groupId>com.bx</groupId>
-    <artifactId>im-client</artifactId>
-    <version>1.1.0</version>
-</dependency>
-```
-内容使用了redis进行通信,所以要配置redis地址：
+#### 服务器端接入
 
-```
-spring:
-  redis:
-    host: 127.0.0.1
-    port: 6379
-```
-
-直接把IMClient通过@Autowire导进来就可以发送消息了，IMClient 只有2个接口：
-```
-public class IMClient {
-
-    /**
-     * 发送私聊消息
-     *
-     * @param recvId 接收用户id
-     * @param messageInfo 消息体，将转成json发送到客户端
-     */
-    void sendPrivateMessage(Long recvId, PrivateMessageInfo... messageInfo)；
-     
-
-    /**
-     * 发送群聊消息
-     *
-     * @param recvIds 群聊用户id列表
-     * @param messageInfo 消息体，将转成json发送到客户端
-     */
-    void sendGroupMessage(List<Long> recvIds, GroupMessageInfo... messageInfo)；
-      
-}
-```
-
-发送私聊消息(群聊也是类似的方式)：
-```
- @Autowired
- private IMClient imClient;
-
- public void sendMessage(){
-    PrivateMessageInfo messageInfo = new PrivateMessageInfo();
-    Long recvId = 1L;
-    messageInfo.setId(123L);
-    messageInfo.setContent("你好呀");
-    messageInfo.setType(MessageType.TEXT.getCode());
-    messageInfo.setSendId(userId);
-    messageInfo.setRecvId(recvId);
-    messageInfo.setSendTime(new Date());
-    imClient.sendPrivateMessage(recvId,messageInfo);
-}
-
-```
-
-如果需要对消息发送的结果进行监听的话，实现MessageListener,并加上@IMListener即可
-```
-@Slf4j
-@IMListener(type = IMListenerType.ALL)
-public class PrivateMessageListener implements MessageListener {
-    
-    @Override
-    public void process(SendResult result){
-        PrivateMessageInfo messageInfo = (PrivateMessageInfo) result.getMessageInfo();
-        if(result.getStatus().equals(IMSendStatus.SUCCESS)){
-            // 消息发送成功
-            log.info("消息已读，消息id:{}，发送者:{},接收者:{}",messageInfo.getId(),messageInfo.getSendId(),messageInfo.getRecvId());
-        }
-    }
-
-}
-```
-
-4.2 网页端接入
-首先将im-ui/src/api/wssocket.js拷贝到自己的项目。
-
-接入代码如下：
-```
-import * as wsApi from './api/wssocket';
-
-let wsUrl = 'ws://localhost:8878/im'
-let userId = 1;
-wsApi.createWebSocket(wsUrl , userId);
-wsApi.onopen(() => {
-    // 连接打开
-    console.log("连接成功");
-});
-wsApi.onmessage((cmd,messageInfo) => {
-    if (cmd == 2) {
-    	// 异地登录，强制下线
-    	console.log("您已在其他地方登陆，将被强制下线");
-    } else if (cmd == 3) {
-    	// 私聊消息
-    	console.log(messageInfo);
-    } else if (cmd == 4) {
-    	// 群聊消息
-    	console.log(messageInfo);
-    }
-
-})
-```
-
-
-#### 联系方式
-
-#### 点下star吧
-喜欢的朋友麻烦点个star，鼓励一下作者吧！
-
+参考项目：https://gitee.com/bluexsx/box-im
